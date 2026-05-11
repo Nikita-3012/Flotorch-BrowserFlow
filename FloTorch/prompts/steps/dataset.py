@@ -1,6 +1,6 @@
 """STEP 8: Dataset creation."""
 
-from run_context import RunContext
+from FloTorch.config.run_context import RunContext
 
 
 def step_dataset(ctx: RunContext) -> str:

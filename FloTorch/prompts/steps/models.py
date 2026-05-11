@@ -1,6 +1,6 @@
 """STEP 6–7: Chat models and embedding model."""
 
-from run_context import RunContext
+from FloTorch.config.run_context import RunContext
 
 
 def build_chat_models_text(ctx: RunContext) -> str:

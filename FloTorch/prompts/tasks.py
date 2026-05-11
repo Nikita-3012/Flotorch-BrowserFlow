@@ -1,12 +1,12 @@
 """Agent task prompts: login and full post-login workflow."""
 
-from run_context import RunContext
-from steps.dataset import step_dataset
-from steps.evaluation import final_summary, step_llm_evaluation, step_prompt_evaluation
-from steps.models import step_chat_models, step_embedding_model
-from steps.org_provider import step_org_provider
-from steps.workspace import step_create_and_enter_workspace
-from steps.workspace_provider import step_workspace_provider
+from FloTorch.config.run_context import RunContext
+from FloTorch.prompts.steps.dataset import step_dataset
+from FloTorch.prompts.steps.evaluation import final_summary, step_llm_evaluation, step_prompt_evaluation
+from FloTorch.prompts.steps.models import step_chat_models, step_embedding_model
+from FloTorch.prompts.steps.org_provider import step_org_provider
+from FloTorch.prompts.steps.workspace import step_create_and_enter_workspace
+from FloTorch.prompts.steps.workspace_provider import step_workspace_provider
 
 
 def build_task_login(ctx: RunContext) -> str:

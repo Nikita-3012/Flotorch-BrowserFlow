@@ -1,6 +1,6 @@
 """STEP 2: Create organization (global) provider."""
 
-from run_context import RunContext
+from FloTorch.config.run_context import RunContext
 
 
 def step_org_provider(ctx: RunContext) -> str:

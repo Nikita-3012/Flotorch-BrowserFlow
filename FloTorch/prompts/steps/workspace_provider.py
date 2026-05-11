@@ -1,6 +1,6 @@
 """STEP 5: Second LLM provider inside the workspace."""
 
-from run_context import RunContext
+from FloTorch.config.run_context import RunContext
 
 
 def build_workspace_provider_text(ctx: RunContext) -> str:

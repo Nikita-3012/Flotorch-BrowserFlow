@@ -1,7 +1,7 @@
 """STEP 3–4: Create workspace and enter it."""
 
-from constants import WORKSPACE_FALLBACK_TOKEN
-from run_context import RunContext
+from FloTorch.config.constants import WORKSPACE_FALLBACK_TOKEN
+from FloTorch.config.run_context import RunContext
 
 
 def step_create_and_enter_workspace(ctx: RunContext) -> str:

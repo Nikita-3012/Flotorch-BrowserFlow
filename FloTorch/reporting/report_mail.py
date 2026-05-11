@@ -8,7 +8,7 @@ import ssl
 from email.message import EmailMessage
 from pathlib import Path
 
-from providers import env
+from FloTorch.config.providers import env
 
 
 def _truthy(key: str, default: bool = False) -> bool:

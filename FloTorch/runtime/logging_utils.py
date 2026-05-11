@@ -2,7 +2,7 @@
 
 from browser_use import Agent
 
-from constants import WORKSPACE_FALLBACK_TOKEN
+from FloTorch.config.constants import WORKSPACE_FALLBACK_TOKEN
 
 
 def make_step_end_logger(phase_label: str, *, watch_workspace_fallback: bool = False):
