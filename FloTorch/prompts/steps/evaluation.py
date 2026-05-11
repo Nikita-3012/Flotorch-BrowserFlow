@@ -1,6 +1,6 @@
 """STEP 9–10: LLM and prompt evaluations."""
 
-from run_context import RunContext
+from FloTorch.config.run_context import RunContext
 
 
 def step_llm_evaluation(ctx: RunContext) -> str:
@@ -12,7 +12,7 @@ STEP 9: RUN LLM EVALUATION
 - Go to Evaluations section
 - Click "LLM Model Evaluation"
 - Provide Name: "llm-evals-evaluation-{ctx.uid}"
-- Select model(s) from Step 5 if created else select Global Model for 'Models to evaluate Field
+- Select model(s) from Step 5 if created else select Global Model for 'Models to evaluate' field
 - Select model(s) from Step 6 if created else select Global Model for 'LLM as a Judge' field
 - Select embedding model from Step 7 (if created) for 'Eval Embedding Model' field
 - Select dataset "llm-evals-{ctx.uid}" from Step 8 for 'Dataset' field
@@ -23,7 +23,7 @@ STEP 9: RUN LLM EVALUATION
 - Wait for 'Review and Run' Screen to be visible
 - Click the primary Run control to start the evaluation (label may be "Run", "Run(1)", "Run(2)", or similar — click the matching Run button)
 - Wait for success toast/overlay to disappear or is dismissed (close it if needed) so it does not block header clicks.   
-- Back to the evaluation list and validate the evaluation is created for "llm-evals-evaluation-{ctx.uid}" in the evaluation search bar and validating it appears in results
+- Return to the evaluation list and validate "llm-evals-evaluation-{ctx.uid}" appears in search results
 """
 
 
