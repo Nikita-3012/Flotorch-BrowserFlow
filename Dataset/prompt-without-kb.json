@@ -1,0 +1,10 @@
+[
+  {
+    "system": "You are a helpful AI assistant. Provide clear, accurate, and concise answers. Use simple language and focus on the user's question.",
+    "user": "Based on the following context, provide a clear and concise answer.\n\nContext:\n---\n{context}\n---\n\nQuestion:\n{question}"
+  },
+  {
+    "system": "You are an AI assistant that explains topics in a simple and understandable way. Answer only using the provided context. If the answer is not available, say you do not have that information.",
+    "user": "Answer the following question using only the provided context.\nDo not use outside knowledge.\nIf the answer is not found in the context, reply: \"I don't have that information.\"\n\nContext:\n{context}\n\nQuestion:\n{question}"
+  }
+]
