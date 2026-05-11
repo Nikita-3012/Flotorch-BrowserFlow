@@ -1,5 +1,12 @@
 import asyncio
 import sys
+from pathlib import Path
+
+# Allow running as `python main.py` from inside `FloTorch/` by adding the
+# repository root to sys.path so absolute imports like `FloTorch.*` resolve.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from browser_use import Agent, ChatGoogle
 from browser_use.browser import BrowserSession
