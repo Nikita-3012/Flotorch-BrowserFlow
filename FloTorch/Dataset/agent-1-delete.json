@@ -1,0 +1,18 @@
+[
+  {
+    "question": "Good morning everyone",
+    "answer": "English"
+  },
+  {
+    "question": "नमस्ते, आपका दिन कैसा है?",
+    "answer": "Hindi"
+  },
+  {
+    "question": "Hola amigo, ¿qué tal?",
+    "answer": "Spanish"
+  },
+  {
+    "question": "Bonjour tout le monde",
+    "answer": "French"
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://coding.flotorch.cloud/gateway/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "cv_aTc2zrx5uRqzqXbeq37GF3wxsnVQjiiLNhfjuXIcYkc",
+    "ANTHROPIC_CUSTOM_HEADERS": "x-client-app: claude-code\nx-project: Flotorch-BrowserFlow"
+  },
+  "model": "deepseek-flash",
+  "availableModels": [
+    "deepseek-flash",
+    "deepseek-pro"
+  ]
+}

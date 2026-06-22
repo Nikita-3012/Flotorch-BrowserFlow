@@ -2,7 +2,7 @@
 
 from browser_use import Agent
 
-from FloTorch.config.constants import WORKSPACE_FALLBACK_TOKEN
+from FloTorch.config.constants import WORKSPACE_FALLBACK_TOKEN, WORKSPACE_GATE_FAILED_TOKEN
 
 
 def make_step_end_logger(phase_label: str, *, watch_workspace_fallback: bool = False):
@@ -30,6 +30,12 @@ def make_step_end_logger(phase_label: str, *, watch_workspace_fallback: bool = F
                     print(
                         "\n>>> QA: Custom workspace creation failed — "
                         'continuing inside "Default Workspace".\n'
+                    )
+                    fallback_notice_printed = True
+                if WORKSPACE_GATE_FAILED_TOKEN in blob:
+                    print(
+                        "\n>>> QA: WORKSPACE GATE FAILED — Default Workspace unavailable; "
+                        "downstream workspace steps should be marked FAILED.\n"
                     )
                     fallback_notice_printed = True
 

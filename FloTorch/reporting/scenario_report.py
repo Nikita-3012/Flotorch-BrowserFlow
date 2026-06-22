@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import html
-import json
 import re
 from typing import Any
 
-from browser_use.agent.views import AgentHistoryList, AgentOutput
+from browser_use.agent.views import AgentHistoryList
 
 
 def _verdict_token(history: AgentHistoryList | None) -> tuple[str, str]:
@@ -36,10 +35,24 @@ def _collect_step_errors(history: AgentHistoryList | None) -> list[tuple[int, st
     return out
 
 
+def _status_from_summary_token(word: str) -> str:
+    w = word.upper()
+    if w in ("PASS", "PASSED", "COMPLETE", "COMPLETED", "OK", "SUCCESS", "SUCCEEDED"):
+        return "PASS"
+    if w in ("FAIL", "FAILED", "ERROR"):
+        return "FAIL"
+    if w in ("SKIP", "SKIPPED"):
+        return "SKIP"
+    return "UNKNOWN"
+
+
 def _parse_final_summary_lines(final_text: str | None) -> list[tuple[str, str]]:
     """
     Best-effort parse of FINAL SUMMARY bullets (numbered lines).
     Returns (line excerpt, guessed status).
+
+    Excerpt always ends with " — {status}" so long playground lines do not look
+    like a blank status when PASS/FAIL was truncated off the end.
     """
     if not final_text or not final_text.strip():
         return []
@@ -48,7 +61,10 @@ def _parse_final_summary_lines(final_text: str | None) -> list[tuple[str, str]]:
         r"\b(PASS|PASSED|FAIL|FAILED|SKIP|SKIPPED|ERROR|COMPLETE|COMPLETED|OK|SUCCESS|SUCCEEDED)\b",
         re.IGNORECASE,
     )
+    placeholder = re.compile(r"PASS\s*/\s*FAIL", re.IGNORECASE)
     rows: list[tuple[str, str]] = []
+    max_body = 200
+
     for raw_line in final_text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -56,28 +72,32 @@ def _parse_final_summary_lines(final_text: str | None) -> list[tuple[str, str]]:
         if not re.match(r"^\d+\.", line):
             continue
 
+        separator: str | None = None
         tail = line
         if "—" in line:
+            separator = "—"
             tail = line.rsplit("—", 1)[-1].strip()
-        elif re.match(r".*\s[-–]\s", line):
+        elif re.search(r"\s[-–]\s", line):
+            separator = "-"
             tail = line.rsplit("-", 1)[-1].strip()
 
-        m = status_words.search(tail)
+        m = None if placeholder.search(tail) else status_words.search(tail)
+        body = line
+        if m and separator:
+            body = line.rsplit(separator, 1)[0].strip()
         if not m:
-            rows.append((line[:120] + ("..." if len(line) > 120 else ""), "UNKNOWN"))
+            m = status_words.search(line)
+            body = line
+
+        if not m:
+            excerpt = line[:max_body] + ("..." if len(line) > max_body else "")
+            rows.append((excerpt, "UNKNOWN"))
             continue
 
-        w = m.group(1).upper()
-        if w in ("PASS", "PASSED", "COMPLETE", "COMPLETED", "OK", "SUCCESS", "SUCCEEDED"):
-            status = "PASS"
-        elif w in ("FAIL", "FAILED", "ERROR"):
-            status = "FAIL"
-        elif w in ("SKIP", "SKIPPED"):
-            status = "SKIP"
-        else:
-            status = "UNKNOWN"
-
-        excerpt = line[:120] + ("..." if len(line) > 120 else "")
+        status = _status_from_summary_token(m.group(1))
+        if len(body) > max_body:
+            body = body[: max_body - 3] + "..."
+        excerpt = f"{body} — {status}"
         rows.append((excerpt, status))
 
     return rows
@@ -94,20 +114,6 @@ def _snip(text: str | None, max_len: int) -> str:
     if len(t) <= max_len:
         return t
     return t[: max_len - 3] + "..."
-
-
-def _action_type_names(mo: AgentOutput) -> str:
-    if not mo.action:
-        return "(no actions)"
-    names: list[str] = []
-    for act in mo.action:
-        data = act.model_dump(exclude_none=True, mode="json")
-        for key in data:
-            if key == "interacted_element":
-                continue
-            names.append(key)
-            break
-    return ", ".join(names) if names else "(unknown)"
 
 
 def _short_url(url: str, max_len: int = 52) -> str:
@@ -319,73 +325,153 @@ def _append_per_step_table(
     lines.append(f"(end of trace — {len(history.history)} steps)")
 
 
-def _append_per_step_trace(
-    lines: list[str],
-    history: AgentHistoryList,
-    *,
-    section_heading: str,
-    compact: bool = True,
-    eval_max: int = 520,
-    memory_max: int = 520,
-    goal_max: int = 420,
-    err_max: int = 360,
-) -> None:
-    """One block per browser-use iteration."""
+def _append_gate_failed_phase(lines: list[str], *, title: str, reason: str) -> None:
+    """Mark a phase FAIL because a suite gate (e.g. login) did not pass."""
     lines.append("")
-    lines.append(section_heading)
-    if not history.history:
-        lines.append("  (no steps recorded)")
+    lines.append(f"{title}: FAIL — {reason}")
+    lines.append("")
+    lines.append(f"--- {title} — steps ---")
+    lines.append("  (not executed — blocked by suite gate)")
+
+
+def _append_login_gate_failed_phases(
+    lines: list[str],
+    *,
+    workflow_mode: str = "full",
+    reason: str,
+    report_ctx: Any = None,
+    execution_modules=None,
+) -> None:
+    from FloTorch.prompts.tasks import suite_phase_titles_for_report
+
+    for title in suite_phase_titles_for_report(
+        workflow_mode=workflow_mode,
+        ctx=report_ctx,
+        execution_modules=execution_modules,
+    ):
+        _append_gate_failed_phase(lines, title=title, reason=reason)
+
+
+def _report_phase_entries(
+    *,
+    login_ok: bool,
+    org_history: AgentHistoryList | None,
+    workspace_history: AgentHistoryList | None,
+    extra_phases: list[tuple[str, AgentHistoryList | None]] | None,
+    workflow_history: AgentHistoryList | None,
+) -> list[tuple[str, AgentHistoryList | None, str | None]]:
+    """Ordered (title, history, skip_reason) for overview and suite verdict."""
+    if not login_ok:
+        return []
+    entries: list[tuple[str, AgentHistoryList | None, str | None]] = []
+    if org_history is not None:
+        entries.append(("Phase 2 — Org provider", org_history, None))
+    if workspace_history is not None:
+        entries.append(("Phase 3 — Workspace", workspace_history, None))
+    if extra_phases:
+        for title, hist in extra_phases:
+            entries.append((title, hist, None))
+    elif workflow_history is not None:
+        entries.append(("Workspace-level tasks", workflow_history, None))
+    elif workspace_history is not None:
+        entries.append(
+            (
+                "Workspace-level tasks",
+                None,
+                "workspace gate failed or phases not run",
+            )
+        )
+    return entries
+
+
+def _phase_status_token(
+    history: AgentHistoryList | None,
+    skipped_reason: str | None = None,
+) -> tuple[str, str]:
+    if history is None:
+        return "SKIPPED", skipped_reason or "not executed"
+    return _verdict_token(history)
+
+
+def _suite_verdict(
+    *,
+    login_ok: bool,
+    phase_entries: list[tuple[str, AgentHistoryList | None, str | None]],
+) -> tuple[str, str]:
+    if not login_ok:
+        return "FAIL", "TC-01 login gate failed — suite aborted"
+    if not phase_entries:
+        return "PASS", "login only (no downstream phases recorded)"
+    tokens = [_phase_status_token(h, skip)[0] for _, h, skip in phase_entries]
+    if "FAIL" in tokens:
+        return "FAIL", "one or more phases reported failure"
+    if "INCOMPLETE" in tokens:
+        return "INCOMPLETE", "one or more phases did not finish cleanly"
+    if all(t == "SKIPPED" for t in tokens):
+        return "SKIPPED", "downstream phases were not executed"
+    return "PASS", "all executed phases passed"
+
+
+def _append_run_metadata(
+    lines: list[str],
+    *,
+    run_id: str | None,
+    workspace_name: str | None,
+    plan_label: str | None,
+) -> None:
+    if not any((run_id, workspace_name, plan_label)):
         return
+    lines.append("RUN")
+    if run_id:
+        lines.append(f"  Run ID:    {run_id}")
+    if workspace_name:
+        lines.append(f"  Workspace: {workspace_name}")
+    if plan_label:
+        lines.append(f"  Plan:      {plan_label}")
+    lines.append("")
 
-    for idx, h in enumerate(history.history):
-        n = idx + 1
-        st = getattr(h, "state", None)
-        url = (getattr(st, "url", None) or "").strip() or "(no url)"
-        title = (getattr(st, "title", None) or "").strip()
 
-        dur_s = ""
-        if h.metadata is not None:
-            try:
-                dur_s = f"{float(h.metadata.duration_seconds):.1f}s"
-            except (TypeError, ValueError, AttributeError):
-                pass
+def _append_phase_overview(
+    lines: list[str],
+    phase_entries: list[tuple[str, AgentHistoryList | None, str | None]],
+) -> None:
+    if not phase_entries:
+        return
+    lines.append("EXECUTION OVERVIEW (phase → result)")
+    lines.append("-" * 50)
+    for title, hist, skip in phase_entries:
+        tok, reason = _phase_status_token(hist, skip)
+        steps = hist.number_of_steps() if hist else 0
+        step_bit = f" · {steps} steps" if steps else ""
+        lines.append(f"  {tok:11}  {title}{step_bit}")
+        if tok in ("FAIL", "INCOMPLETE", "SKIPPED"):
+            lines.append(f"             ({reason})")
+    lines.append("-" * 50)
 
-        if compact:
-            dur_bit = f"{dur_s} | " if dur_s else ""
-            title_bit = f" | {_snip(title, 44)}" if title else ""
-            lines.append(f"Step {n} | {dur_bit}{_short_url(url)}{title_bit}")
-            mo = h.model_output
-            if mo:
-                note = (mo.evaluation_previous_goal or "").strip() or (mo.memory or "").strip()
-                if note:
-                    lines.append(f"  {_snip(note, 260)}")
-                lines.append(
-                    f"  {_action_type_names(mo)} → {_outcome_compact_line(h, max_total=280)}"
-                )
-            else:
-                lines.append("  (no model output for this step)")
-                lines.append(f"  → {_outcome_compact_line(h, max_total=280)}")
-        else:
-            dur = f" | {dur_s}" if dur_s else ""
-            lines.append(f"Step {n} | {url}{dur}")
-            mo = h.model_output
-            if mo:
-                if mo.evaluation_previous_goal:
-                    lines.append(f"  Eval: {_snip(mo.evaluation_previous_goal, eval_max)}")
-                if mo.memory:
-                    lines.append(f"  Memory: {_snip(mo.memory, memory_max)}")
-                if mo.next_goal:
-                    lines.append(f"  Next goal: {_snip(mo.next_goal, goal_max)}")
-                lines.append(f"  Actions: {_action_type_names(mo)}")
-            else:
-                lines.append("  (no model output for this step)")
-            for r in h.result:
-                if r.error:
-                    lines.append(f"  Action error: {_snip(str(r.error), err_max)}")
-                if r.is_done:
-                    lines.append(f"  Terminal done: success={r.success}")
 
-    lines.append(f"(end of trace — {len(history.history)} steps)")
+def _append_phase_block(
+    lines: list[str],
+    *,
+    title: str,
+    history: AgentHistoryList | None,
+    skipped_reason: str | None = None,
+) -> None:
+    lines.append("")
+    if history is None:
+        reason = skipped_reason or "not executed"
+        lines.append(f"{title}: SKIPPED — {reason}")
+        lines.append("")
+        lines.append(f"--- {title} — steps ---")
+        lines.append("  (skipped)")
+        return
+    tok, reason = _verdict_token(history)
+    lines.append(f"{title}: {tok} — {reason}")
+    lines.append(
+        f"  agent: is_done={history.is_done()} | "
+        f"successful={history.is_successful()} | "
+        f"steps={history.number_of_steps()}"
+    )
+    _append_per_step_table(lines, history, section_heading=f"--- {title} — steps ---")
 
 
 def build_scenario_report(
@@ -394,12 +480,39 @@ def build_scenario_report(
     workflow_history: AgentHistoryList | None,
     login_ok: bool,
     login_override: bool,
+    workflow_mode: str = "full",
+    org_history: AgentHistoryList | None = None,
+    workspace_history: AgentHistoryList | None = None,
+    extra_phases: list[tuple[str, AgentHistoryList | None]] | None = None,
+    run_id: str | None = None,
+    workspace_name: str | None = None,
+    plan_label: str | None = None,
+    report_ctx: Any = None,
+    execution_modules=None,
 ) -> str:
     lines: list[str] = []
     lines.append("")
     lines.append("=" * 50)
     lines.append("SCENARIO REPORT (PASS / FAIL)")
     lines.append("=" * 50)
+    _append_run_metadata(
+        lines,
+        run_id=run_id,
+        workspace_name=workspace_name,
+        plan_label=plan_label,
+    )
+
+    phase_entries = _report_phase_entries(
+        login_ok=login_ok,
+        org_history=org_history,
+        workspace_history=workspace_history,
+        extra_phases=extra_phases,
+        workflow_history=workflow_history,
+    )
+    suite_tok, suite_reason = _suite_verdict(login_ok=login_ok, phase_entries=phase_entries)
+    lines.append(f"SUITE VERDICT: {suite_tok} — {suite_reason}")
+    if login_ok and phase_entries:
+        _append_phase_overview(lines, phase_entries)
 
     # TC-01 (suite gate uses login_ok; may override agent verdict via URL check)
     _, tc_reason = _verdict_token(login_history)
@@ -419,130 +532,62 @@ def build_scenario_report(
         section_heading="--- TC-01 LOGIN — steps ---",
     )
 
-    # Workflow aggregate
-    lines.append("")
-    if workflow_history is None:
-        lines.append("WORKFLOW (2–10): SKIPPED — login did not pass")
+    if not login_ok:
+        from FloTorch.prompts.tasks import LOGIN_GATE_FAILED_REASON
+
         lines.append("")
-        lines.append("--- WORKFLOW — steps ---")
-        lines.append("  (skipped — login gate failed)")
-    else:
-        wf_token, wf_reason = _verdict_token(workflow_history)
-        lines.append(f"WORKFLOW (2–10): {wf_token} — {wf_reason}")
         lines.append(
-            f"  agent: is_done={workflow_history.is_done()} | "
-            f"successful={workflow_history.is_successful()} | "
-            f"steps={workflow_history.number_of_steps()}"
+            "SUITE GATE: TC-01 login did not pass — all phases below are FAIL (not executed)."
         )
-
-        err_pairs = _collect_step_errors(workflow_history)
-        if err_pairs:
-            lines.append(f"  browser-use step errors ({len(err_pairs)}):")
-            for step_i, msg in err_pairs[:20]:
-                short = msg.replace("\n", " ")[:200]
-                lines.append(f"    - step {step_i}: {short}")
-            if len(err_pairs) > 20:
-                lines.append(f"    ... and {len(err_pairs) - 20} more")
-
-        _append_per_step_table(
+        _append_login_gate_failed_phases(
             lines,
-            workflow_history,
-            section_heading="--- WORKFLOW (2–10) — steps ---",
+            workflow_mode=workflow_mode,
+            reason=LOGIN_GATE_FAILED_REASON,
+            report_ctx=report_ctx,
+            execution_modules=execution_modules,
         )
+    else:
+        if org_history is not None:
+            _append_phase_block(lines, title="PHASE 2 — Org provider", history=org_history)
+        if workspace_history is not None:
+            _append_phase_block(lines, title="PHASE 3 — Workspace", history=workspace_history)
 
-        fr = workflow_history.final_result()
-        lines.append("")
-        lines.append("  --- Agent closing summary (FINAL SUMMARY prompt) ---")
-        parsed = _parse_final_summary_lines(fr)
-        if parsed:
-            for excerpt, st in parsed:
-                lines.append(f"    [{st}] {excerpt}")
-        elif fr:
-            lines.append("    (could not parse numbered statuses; see full trace for the raw message.)")
-            lines.append(f"    Raw (truncated): {_snip(fr, 800)}")
-        else:
-            lines.append("    (no final_result text on last step)")
+        if extra_phases:
+            for title, hist in extra_phases:
+                _append_phase_block(lines, title=title, history=hist)
+        elif workflow_history is not None:
+            _append_phase_block(
+                lines,
+                title="PHASE 4+ — Workspace-level tasks",
+                history=workflow_history,
+            )
+        elif workspace_history is not None:
+            _append_phase_block(
+                lines,
+                title="PHASE 4+ — Workspace-level tasks",
+                history=None,
+                skipped_reason="workspace gate failed or phases not run",
+            )
+
+        close_hist = workflow_history
+        if close_hist is not None:
+            fr = close_hist.final_result()
+            lines.append("")
+            lines.append("  --- Suite close / FINAL SUMMARY ---")
+            parsed = _parse_final_summary_lines(fr)
+            if parsed:
+                for excerpt, st in parsed:
+                    lines.append(f"    [{st}] {excerpt}")
+            elif fr:
+                lines.append(f"    Raw (truncated): {_snip(fr, 800)}")
+            err_pairs = _collect_step_errors(close_hist)
+            if err_pairs:
+                lines.append(f"  Close-phase step errors ({len(err_pairs)}):")
+                for step_i, msg in err_pairs[:10]:
+                    lines.append(f"    - step {step_i}: {msg.replace(chr(10), ' ')[:200]}")
 
     lines.append("=" * 50)
     return "\n".join(lines)
-
-
-def _summarize_interacted_elements_for_report(value: Any) -> Any:
-    """Replace heavy DOM blobs with short labels (name/type/placeholder)."""
-    if not isinstance(value, list):
-        return value
-    out: list[str | None] = []
-    for el in value:
-        if el is None:
-            out.append(None)
-            continue
-        if isinstance(el, dict):
-            attrs = el.get("attributes") or {}
-            hint = (
-                attrs.get("name")
-                or attrs.get("type")
-                or (attrs.get("placeholder") or "")[:48]
-                or attrs.get("id")
-                or "element"
-            )
-            ax = el.get("ax_name") or ""
-            line = f"{hint}" + (f" — {ax}" if ax else "")
-            out.append(line[:160] + ("..." if len(line) > 160 else ""))
-        else:
-            out.append("(element)")
-    return out
-
-
-def _sanitize_history_dump_for_report(obj: Any, *, depth: int = 0) -> Any:
-    """Shrink browser-use dumps for email/files: no DOM trees, no base64 images."""
-    if depth > 40:
-        return "<max depth>"
-    if isinstance(obj, dict):
-        cleaned: dict[str, Any] = {}
-        for key, val in obj.items():
-            if key == "state_message":
-                cleaned[key] = "<omitted — see per-step trace in the main report>"
-                continue
-            if key == "interacted_element":
-                cleaned[key] = _summarize_interacted_elements_for_report(val)
-                continue
-            if key == "images" and isinstance(val, list):
-                cleaned[key] = []
-                for item in val:
-                    if isinstance(item, dict):
-                        cleaned[key].append(
-                            {"name": item.get("name", "?"), "data": "<base64 omitted>"}
-                        )
-                    else:
-                        cleaned[key].append(item)
-                continue
-            if key == "reasoning" and isinstance(val, str) and len(val) > 900:
-                cleaned[key] = val[:900] + "..."
-                continue
-            if key == "extracted_content" and isinstance(val, str) and len(val) > 3000:
-                rest = len(val) - 3000
-                cleaned[key] = val[:3000] + f"\n... ({rest} more characters omitted)"
-                continue
-            if key == "long_term_memory" and isinstance(val, str) and len(val) > 2000:
-                cleaned[key] = val[:2000] + "..."
-                continue
-            cleaned[key] = _sanitize_history_dump_for_report(val, depth=depth + 1)
-        return cleaned
-    if isinstance(obj, list):
-        return [_sanitize_history_dump_for_report(x, depth=depth + 1) for x in obj]
-    return obj
-
-
-def format_history_appendix_readable(history: AgentHistoryList, *, heading: str) -> str:
-    """
-    Structured history as JSON (for debugging). DOM trees and state_message blobs are
-    stripped or shortened by _sanitize_history_dump_for_report.
-    """
-    raw = history.model_dump()
-    safe = _sanitize_history_dump_for_report(raw)
-    body = json.dumps(safe, indent=2, ensure_ascii=False, default=str)
-    sep = "=" * 50
-    return f"\n\n{sep}\n{heading}\n{sep}\n{body}\n"
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +764,65 @@ def _section_heading_html(title: str) -> str:
     )
 
 
+def _verdict_color(token: str) -> str:
+    return {
+        "PASS": _C_SUCCESS,
+        "FAIL": _C_FAILURE,
+        "INCOMPLETE": _C_UNCERTAIN,
+        "SKIPPED": _C_NEUTRAL,
+        "N/A": _C_NEUTRAL,
+    }.get(token, _C_NEUTRAL)
+
+
+def _phase_overview_table_html(
+    phase_entries: list[tuple[str, AgentHistoryList | None, str | None]],
+) -> str:
+    if not phase_entries:
+        return ""
+    rows: list[str] = []
+    for title, hist, skip in phase_entries:
+        tok, reason = _phase_status_token(hist, skip)
+        steps = hist.number_of_steps() if hist else 0
+        step_cell = str(steps) if steps else "—"
+        color = _verdict_color(tok)
+        rows.append(
+            "<tr>"
+            f"<td style=\"padding:8px 10px;border:1px solid {_C_BORDER};\">{_esc(title)}</td>"
+            f"<td style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:center;\">"
+            f"{step_cell}</td>"
+            f"<td style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:center;"
+            f"font-weight:600;color:{color};\">{tok}</td>"
+            f"<td style=\"padding:8px 10px;border:1px solid {_C_BORDER};color:{_C_MUTED};"
+            f"font-size:12px;\">{_esc(reason)}</td>"
+            "</tr>"
+        )
+    return (
+        "<table cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+        "style=\"border-collapse:collapse;width:100%;margin:0 0 16px;"
+        "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;\">"
+        f"<thead><tr style=\"background:{_C_HEAD_BG};\">"
+        f"<th style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:left;\">Phase</th>"
+        f"<th style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:center;width:56px;\">"
+        "Steps</th>"
+        f"<th style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:center;width:90px;\">"
+        "Result</th>"
+        f"<th style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:left;\">Note</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+
+def _phase_verdict_badge_html(history: AgentHistoryList | None, skipped_reason: str | None) -> str:
+    tok, reason = _phase_status_token(history, skipped_reason)
+    color = _verdict_color(tok)
+    return (
+        f"<p style=\"margin:0 0 8px;font-size:13px;\">"
+        f"<strong style=\"color:{color};\">{tok}</strong>"
+        f"<span style=\"color:{_C_MUTED};\"> — {_esc(reason)}</span></p>"
+    )
+
+
 def build_scenario_report_html(
     *,
     run_id: str,
@@ -726,8 +830,32 @@ def build_scenario_report_html(
     workflow_history: AgentHistoryList | None,
     login_ok: bool,
     login_override: bool,
+    workflow_mode: str = "full",
+    org_history: AgentHistoryList | None = None,
+    workspace_history: AgentHistoryList | None = None,
+    extra_phases: list[tuple[str, AgentHistoryList | None]] | None = None,
+    workspace_name: str | None = None,
+    plan_label: str | None = None,
+    report_ctx: Any = None,
+    execution_modules=None,
 ) -> str:
     """Pretty HTML version of the scenario report. Suitable for use as the email HTML body."""
+
+    phase_entries = _report_phase_entries(
+        login_ok=login_ok,
+        org_history=org_history,
+        workspace_history=workspace_history,
+        extra_phases=extra_phases,
+        workflow_history=workflow_history,
+    )
+    suite_tok, suite_reason = _suite_verdict(login_ok=login_ok, phase_entries=phase_entries)
+    suite_color = _verdict_color(suite_tok)
+
+    close_label = "Suite close"
+    if extra_phases:
+        close_label = extra_phases[-1][0]
+    elif workflow_history is not None:
+        close_label = "Workspace-level tasks"
 
     _, tc_reason = _verdict_token(login_history)
     login_display = "PASS" if login_ok else "FAIL"
@@ -739,17 +867,13 @@ def build_scenario_report_html(
         )
 
     if workflow_history is None:
-        wf_display = "SKIPPED"
-        wf_color = _C_NEUTRAL
-        wf_note = "login did not pass — downstream steps were not executed"
+        wf_display = suite_tok if login_ok else "FAIL"
+        wf_color = suite_color if login_ok else _C_FAILURE
+        wf_note = suite_reason if login_ok else "TC-01 login gate failed — suite aborted"
     else:
         wf_tok, wf_reason = _verdict_token(workflow_history)
         wf_display = wf_tok
-        wf_color = {
-            "PASS": _C_SUCCESS,
-            "FAIL": _C_FAILURE,
-            "INCOMPLETE": _C_UNCERTAIN,
-        }.get(wf_tok, _C_NEUTRAL)
+        wf_color = _verdict_color(wf_tok)
         wf_note = wf_reason
 
     parts: list[str] = []
@@ -769,10 +893,33 @@ def build_scenario_report_html(
     parts.append(
         "<h2 style=\"margin:0 0 4px;color:" + _C_TEXT + ";font-size:20px;\">"
         "Scenario Report (PASS / FAIL)</h2>"
-        f"<div style=\"color:{_C_MUTED};font-size:13px;margin-bottom:18px;\">"
+        f"<div style=\"color:{_C_MUTED};font-size:13px;margin-bottom:6px;\">"
         f"Run ID: <code style=\"background:{_C_HEAD_BG};padding:1px 6px;border-radius:4px;\">"
-        f"{_esc(run_id)}</code></div>"
+        f"{_esc(run_id)}</code>"
     )
+    if workspace_name:
+        parts.append(
+            f" &nbsp;·&nbsp; Workspace: <code style=\"background:{_C_HEAD_BG};"
+            f"padding:1px 6px;border-radius:4px;\">{_esc(workspace_name)}</code>"
+        )
+    parts.append("</div>")
+    if plan_label:
+        parts.append(
+            f"<div style=\"color:{_C_MUTED};font-size:12px;margin-bottom:14px;\">"
+            f"{_esc(plan_label)}</div>"
+        )
+    else:
+        parts.append("<div style=\"margin-bottom:14px;\"></div>")
+
+    parts.append(
+        f"<p style=\"margin:0 0 14px;font-size:14px;\">"
+        f"<strong>Suite verdict:</strong> "
+        f"<span style=\"color:{suite_color};font-weight:700;\">{suite_tok}</span>"
+        f"<span style=\"color:{_C_MUTED};\"> — {_esc(suite_reason)}</span></p>"
+    )
+    if login_ok and phase_entries:
+        parts.append(_section_heading_html("Execution overview"))
+        parts.append(_phase_overview_table_html(phase_entries))
 
     # Summary cards
     parts.append(
@@ -782,47 +929,77 @@ def build_scenario_report_html(
         "<tr>"
     )
     parts.append(_summary_card_html("TC-01 Login", login_display, login_color, login_note))
-    parts.append(
-        _summary_card_html("Workflow (Steps 2–10)", wf_display, wf_color, wf_note)
-    )
+    parts.append(_summary_card_html(close_label, wf_display, wf_color, wf_note))
     parts.append("</tr></table>")
 
     # Login table
-    parts.append(_section_heading_html("TC-01 LOGIN — Steps"))
+    parts.append(_section_heading_html("Phase 1 — TC-01 LOGIN"))
     parts.append(_steps_table_html(_history_rows_html(login_history)))
 
-    # Workflow table
-    parts.append(_section_heading_html("WORKFLOW (Steps 2–10)"))
-    if workflow_history is None:
-        parts.append(
-            f"<p style=\"color:#92400e;background:#fef3c7;border:1px solid #fde68a;"
-            "padding:10px 12px;border-radius:6px;font-size:13px;margin:0;\">"
-            "Skipped — login gate failed.</p>"
+    if not login_ok:
+        from FloTorch.prompts.tasks import (
+            LOGIN_GATE_FAILED_REASON,
+            suite_phase_titles_for_report,
         )
-    else:
+
+        parts.append(
+            "<p style=\"color:#b91c1c;font-size:14px;font-weight:600;margin:18px 0 8px;\">"
+            "Suite gate: TC-01 login did not pass — all phases below are FAIL (not executed)."
+            "</p>"
+        )
+        parts.append(
+            "<table cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
+            "style=\"border-collapse:collapse;width:100%;margin-bottom:16px;"
+            "font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:13px;\">"
+            f"<thead><tr style=\"background:{_C_HEAD_BG};\">"
+            f"<th style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:left;\">Phase</th>"
+            f"<th style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:center;width:90px;\">"
+            "Result</th></tr></thead><tbody>"
+        )
+        for title in suite_phase_titles_for_report(
+            workflow_mode=workflow_mode,
+            ctx=report_ctx,
+            execution_modules=execution_modules,
+        ):
+            parts.append(
+                "<tr>"
+                f"<td style=\"padding:8px 10px;border:1px solid {_C_BORDER};\">{_esc(title)}</td>"
+                f"<td style=\"padding:8px 10px;border:1px solid {_C_BORDER};text-align:center;"
+                f"font-weight:600;color:{_C_FAILURE};\">FAIL</td>"
+                "</tr>"
+            )
+        parts.append("</tbody></table>")
+        parts.append(
+            f"<p style=\"color:{_C_MUTED};font-size:12px;margin:0 0 12px;\">"
+            f"{_esc(LOGIN_GATE_FAILED_REASON)}</p>"
+        )
+
+    if login_ok and org_history is not None:
+        parts.append(_section_heading_html("Phase 2 — Org provider"))
+        parts.append(_phase_verdict_badge_html(org_history, None))
+        parts.append(_steps_table_html(_history_rows_html(org_history)))
+
+    if login_ok and workspace_history is not None:
+        parts.append(_section_heading_html("Phase 3 — Workspace"))
+        parts.append(_phase_verdict_badge_html(workspace_history, None))
+        parts.append(_steps_table_html(_history_rows_html(workspace_history)))
+
+    if login_ok and extra_phases:
+        for title, hist in extra_phases:
+            parts.append(_section_heading_html(title))
+            parts.append(_phase_verdict_badge_html(hist, None if hist else "skipped"))
+            if hist is not None:
+                parts.append(_steps_table_html(_history_rows_html(hist)))
+    elif login_ok and workflow_history is not None:
+        parts.append(_section_heading_html("Workspace-level tasks"))
+        parts.append(_phase_verdict_badge_html(workflow_history, None))
         parts.append(_steps_table_html(_history_rows_html(workflow_history)))
 
-        err_pairs = _collect_step_errors(workflow_history)
-        if err_pairs:
-            parts.append(
-                f"<h4 style=\"margin:18px 0 6px;font-size:13px;color:{_C_FAILURE};\">"
-                f"Step Errors ({len(err_pairs)})</h4>"
-            )
-            parts.append(
-                f"<ul style=\"margin:0;padding-left:20px;color:{_C_TEXT};"
-                "font-size:12px;line-height:1.6;\">"
-            )
-            for step_i, msg in err_pairs[:20]:
-                short = _esc(msg.replace("\n", " ")[:200])
-                parts.append(f"<li>Step {step_i}: {short}</li>")
-            if len(err_pairs) > 20:
-                parts.append(f"<li>… and {len(err_pairs) - 20} more</li>")
-            parts.append("</ul>")
-
+    if workflow_history is not None:
         fr = workflow_history.final_result()
         parsed = _parse_final_summary_lines(fr)
         if parsed:
-            parts.append(_section_heading_html("Agent Closing Summary"))
+            parts.append(_section_heading_html("Suite close — Agent summary"))
             parts.append(
                 "<table cellpadding=\"0\" cellspacing=\"0\" border=\"0\" "
                 "style=\"border-collapse:collapse;width:100%;"
@@ -856,6 +1033,19 @@ def build_scenario_report_html(
                     "</tr>"
                 )
             parts.append("</tbody></table>")
+        err_pairs = _collect_step_errors(workflow_history)
+        if err_pairs:
+            parts.append(
+                f"<p style=\"color:{_C_FAILURE};font-size:13px;font-weight:600;"
+                f"margin:12px 0 6px;\">Close-phase step errors ({len(err_pairs)})</p>"
+            )
+            parts.append("<ul style=\"margin:0 0 12px;padding-left:20px;font-size:12px;"
+                         f"color:{_C_TEXT};\">")
+            for step_i, msg in err_pairs[:10]:
+                parts.append(
+                    f"<li>step {step_i}: {_esc(msg.replace(chr(10), ' ')[:200])}</li>"
+                )
+            parts.append("</ul>")
 
     parts.append(
         f"<div style=\"margin-top:24px;padding-top:12px;border-top:1px solid {_C_BORDER};"

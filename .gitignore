@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .vscode/
 .env
+
+# Automation outputs (per-run folders under FloTorch/results/<run_id>/)
+FloTorch/results/
+opencode.json

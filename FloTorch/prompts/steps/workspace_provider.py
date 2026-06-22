@@ -1,12 +1,15 @@
 """STEP 5: Second LLM provider inside the workspace."""
 
 from FloTorch.config.run_context import RunContext
+from FloTorch.prompts.steps.provider_form_rules import provider_service_and_type_select_all
 
 
 def build_workspace_provider_text(ctx: RunContext) -> str:
+    if not ctx.has_detected_providers:
+        return "- SKIP — no provider credentials in FloTorch/.env; Step 2 was skipped. Go to the next step."
     sp = ctx.selected_second_provider
     if not sp:
-        return "- SKIP — only 1 provider available. Go to model creation."
+        return "- SKIP — only 1 provider available in .env. Go to model creation."
     return f"""
 - Click on 'Model Registry' 
 - Click on 'Providers' tab
@@ -14,36 +17,38 @@ def build_workspace_provider_text(ctx: RunContext) -> str:
 
 Inside the modal:
 - In the "Name" field:
-   Enter exactly (all lowercase): {ctx.workspace_second_provider_name}
+   Enter exactly (all lowercase, use hyphens between words — no spaces): {ctx.workspace_second_provider_name}
 
 - In the "Description" field:
    Enter exactly: {ctx.workspace_second_provider_description}
 
-- In the "Provider" dropdown:
-   - Click the Provider dropdown first
-   - Click/select ONLY the exact text match: {sp['name']}
-   - NEVER choose by position/index (e.g., do not choose "2nd option")
-   - Do NOT use arrow keys + Enter to choose an item by position
-   - Assume NO search is available; scroll the dropdown list until "{sp['name']}" is visible.
-   - Click the exact TITLE row "{sp['name']}" (not the description/subtext line).
-   - After clicking the option, CLOSE the dropdown by clicking an empty area inside the modal (preferred).
-     Use Escape ONLY if clicking outside does not close it.
-   - HARD VERIFICATION (MANDATORY):
-       1) The dropdown menu MUST be closed (no list visible)
-       2) The combobox field MUST display exactly: "{sp['name']}"
-     If either condition is not true, reopen the dropdown and try again (up to 3 attempts) until it sticks.
-   - HARD GATE: do not enter API Key or any credentials until the combobox shows exactly "{sp['name']}"
+- In the "Provider" dropdown (Reka/Radix combobox — read the REKA section of the system message first):
+   - Click the Provider dropdown trigger to open the popper. Wait ~500ms for options to render.
+   - **PRIMARY (deterministic, 1-attempt selection): use the evaluate JS template from the REKA section with `want = "{sp['name']}"`.** This matches the exact label "{sp['name']}" (not a prefix), so it cannot pick a similarly-named provider by mistake (e.g. it won't pick "Google Vertex AI" when you want "Google Generative AI"). The template dispatches the full pointer+mouse event sequence — plain `.click()` does NOT work on Radix.
+   - **FALLBACK (only if PRIMARY returns 'no-match' or 'no-options-found'):** keyboard typeahead — but be careful: typing one letter (e.g. "G") may highlight the wrong sibling. Use ArrowDown until the highlighted row's visible label is exactly "{sp['name']}", then press Enter.
+   - **DO NOT** spam click(index) on the option — Radix ignores plain index-clicks.
+   - VERIFICATION (single, simple check):
+       (B) the popper wrapper `[data-reka-popper-content-wrapper]` is gone (Reka auto-closes on selection — no manual close needed).
+       (C) the trigger now displays exactly "{sp['name']}".
+      If (B) and (C) are both true → the provider IS selected, proceed.
+      If only (B) is true but trigger is empty → reopen and use the OTHER strategy (if typeahead failed, use JS fallback; if JS failed, use typeahead).
+      If (B) is false (popper still open) → the option click missed entirely; retry once.
+    - DO NOT look for a "checkmark while the list is open" — Reka closes the popper on selection, so the tick is invisible by the time you'd observe it. Trust the trigger text.
+    - Maximum 2 selection attempts. If still not selected after 2 attempts, accept partial failure and continue.
+   - HARD GATE: do not type the API Key or any credential until (B) and (C) are both true.
 
 - After selecting the provider type, additional credential fields will appear
+
+{provider_service_and_type_select_all()}
 
 - Fill provider credential fields using ONLY the values from {sp['fields']}
 
 Rules:
-- Before typing each credential, re-check Provider field still equals "{sp['name']}". If it changed, fix provider first.
+- Before typing each credential, re-check the closed Provider trigger still shows exactly "{sp['name']}". If it does not, fix provider first — never type secrets into Name/Description.
 - For each credential field shown in the UI, match its label with the exact key in {sp['fields']}
-- Before typing, click directly into the specific credential input by its LABEL (e.g., click the "API Key" input).
-  Never type credentials into the Name/Description fields by accident.
-- If unsure which field is focused, click the label/input again, then type.
+- Scroll **inside** the modal body: use the scrollable **inner column** that contains the form fields (not only the outer dialog frame). Scroll until the credential label (e.g. "API Key") is on-screen before clicking it.
+- Before typing, click the **label text** "API Key" (or the matching credential label) or its dedicated input so focus is NOT in Name or Description. If the typed characters appear in Description, you clicked the wrong element — stop, click the correct field, clear, and type again.
+- If unsure which field is focused, click the credential label/input again, then type.
 - Enter the corresponding value from {sp['fields']} into that field
 - Never type placeholder/example values like "test-api-key", "your-api-key", or sample URLs
 - Always use the real fetched configuration values
