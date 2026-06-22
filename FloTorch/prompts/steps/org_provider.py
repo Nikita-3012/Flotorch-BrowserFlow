@@ -63,6 +63,12 @@ STEP 2: CREATE GLOBAL PROVIDER
 ==============================
 {priority_note}
 {guardrail_note}
+CRITICAL — CREATE EXACTLY ONE PROVIDER:
+- Create ONLY the provider specified below ({fp['name']}).
+- Do NOT create any other provider types (Groq, Google Generative AI, Google Vertex AI, OpenAI, etc.).
+- Do NOT navigate to other provider sections or create duplicate providers.
+- After creating this single provider, proceed directly to the next step.
+
 - Go to Provider section (organization / global scope — not inside a workspace).
 - Click Create Organization Provider
 
@@ -96,6 +102,7 @@ Field mappings:
 
 - Scroll modal; click "Create Provider"
 - Search `{ctx.org_provider_name}` in org provider list — must appear.
+- STOP — do NOT create any additional providers after this one.
 
 {_org_post_create_verification(ctx)}
 """

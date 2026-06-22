@@ -30,7 +30,11 @@ for _stream in (sys.stdout, sys.stderr):
 from FloTorch.runtime.browser_fullscreen import fullscreen_browser_window
 from FloTorch.runtime.logging_utils import make_step_end_logger
 from FloTorch.runtime.results_storage import save_scenario_reports
-from FloTorch.config.execution_config import execution_modules_raw, read_execution_config
+from FloTorch.config.execution_config import (
+    derive_workflow_mode_from_modules,
+    execution_modules_raw,
+    read_execution_config,
+)
 from FloTorch.config.providers import build_run_context
 from FloTorch.reporting.scenario_report import build_scenario_report, build_scenario_report_html
 from FloTorch.config.constants import (
@@ -150,17 +154,19 @@ async def main():
     _exec_modules = execution_modules_raw()
     _exec_config = read_execution_config()
 
-    workflow_mode = (os.getenv("FLOTORCH_WORKFLOW") or "full").strip().lower()
-    if workflow_mode == "guardrail":
-        workflow_mode = "guardrails"
-    if workflow_mode == "evaluation":
-        workflow_mode = "evaluations"
-    if workflow_mode == "workflow":
-        workflow_mode = "workflow_evaluation"
-
     if _exec_modules is not None:
         print("Execution plan: execution.py")
-        workflow_mode = "evaluations"  # reporting label when using execution.py
+        workflow_mode = derive_workflow_mode_from_modules(
+            _exec_modules, eval_types=ctx.eval_types
+        )
+    else:
+        workflow_mode = (os.getenv("FLOTORCH_WORKFLOW") or "full").strip().lower()
+        if workflow_mode == "guardrail":
+            workflow_mode = "guardrails"
+        if workflow_mode == "evaluation":
+            workflow_mode = "evaluations"
+        if workflow_mode == "workflow":
+            workflow_mode = "workflow_evaluation"
     _VALID_WORKFLOWS = (
         "full",
         "prompt_partials",
@@ -352,6 +358,14 @@ async def main():
         if _exec_modules is not None:
             if isinstance(_exec_modules, str) and _exec_modules.strip().lower() == "all":
                 task_builders.print_execution_plan_summary(ctx)
+            elif workflow_mode == "guardrails":
+                print(
+                    "  GUARDRAILS SUITE (execution.py):"
+                    "\n    1. Login → 2. Org provider → 3. Workspace"
+                    "\n    4. Sanity guardrails (4) → ONE model → Playground"
+                    "\n    (No close phase — MODULES is guardrails, not all)"
+                    "\n    (No evaluations — EVAL_TYPES is empty)"
+                )
             _plan_modules = task_builders.normalize_execution_modules(_exec_modules, ctx)
             org_phase_ran = "org_provider" in _plan_modules
             print(f"  Modules (ordered): {', '.join(_plan_modules)}")

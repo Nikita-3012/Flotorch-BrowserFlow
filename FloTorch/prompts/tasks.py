@@ -113,9 +113,14 @@ PHASE SCOPE (STRICT):
 
 def _workflow_header(*, prerequisite: str) -> str:
     return f"""
-You are automating a QA workflow on FloTorch. Follow each step in order.
 PREREQUISITE: {prerequisite}
 If you are unexpectedly on the login page, use "done" with success=false and explain — do not invent credentials.
+
+SCOPE RULE — THIS PHASE ONLY:
+- Execute ONLY the steps described below. Do NOT add, reorder, or invent steps.
+- Do NOT create organization providers, workspace providers, models, datasets, evaluations, or anything outside this phase's scope.
+- Do NOT generate your own plan — follow the exact sequence given.
+- If you see steps or actions not described below, SKIP them and stay on task.
 
 Wait for pages to fully load before interacting. After any Save/Create/Submit, wait for success confirmation before continuing.
 If a form field doesn't match exactly, use the closest option available in the UI.
@@ -304,6 +309,12 @@ def build_task_guardrails_phase(ctx: RunContext) -> str:
         [
             _workflow_header(prerequisite=_INSIDE_WORKSPACE),
             f"""
+GUARDRAILS-ONLY PHASE — STRICT SCOPE:
+- The org provider ({ctx.first_provider['name'] if ctx.first_provider else 'N/A'}) and workspace already exist from earlier phases.
+- Do NOT create any organization providers, workspace providers, LLM models, embedding models, or datasets.
+- Do NOT navigate to Provider sections, Dataset sections, or Evaluation sections.
+- Do NOT create any FloTorch chat models beyond the single guardrail-test model described below.
+
 EXECUTION ORDER (strict — complete each block before the next):
 1. **Create {guardrail_label}**
 2. **One model only** — Model Registry → Models → single Published pipeline `{test_model}`:
@@ -424,7 +435,8 @@ def normalize_execution_modules(modules, ctx: RunContext) -> list[str]:
     """Resolve MODULES from execution.py (all, list, or comma-separated str)."""
     if isinstance(modules, str) and modules.strip().lower() == "all":
         return _derive_modules_all(ctx)
-    eval_types = _evaluation_types(ctx) or _active_eval_types(ctx)
+    # execution.py: empty EVAL_TYPES means skip evaluations — do not fall back to .env defaults.
+    eval_types = _evaluation_types(ctx)
     if isinstance(modules, str):
         base = [m.strip().lower() for m in modules.split(",") if m.strip()]
     elif isinstance(modules, list):
@@ -909,10 +921,134 @@ def suite_phase_titles_for_execution(ctx: RunContext, modules) -> list[str]:
     titles: list[str] = []
     if "org_provider" in mod_list:
         titles.append("Phase 2: Org provider")
-    if "workspace" in mod_list:
-        titles.append("Phase 3: Workspace create and enter")
+    titles.append("Phase 3: Workspace create and enter")
     titles.extend(label for label, _, _, _ in workspace_phases_from_execution_plan(modules, ctx))
     return titles
+
+
+def _single_shot_login(ctx: RunContext) -> str:
+    return f"""
+==============================
+STEP 1: LOGIN
+==============================
+- Go to https://console.flotorch.cloud/
+- Enter email: {ctx.email}
+- Enter password: {ctx.password}
+- Click Login
+- Wait for dashboard to fully load (not on /auth/signin)
+"""
+
+
+def _single_shot_eval_steps(ctx: RunContext) -> str:
+    types = _evaluation_types(ctx)
+    if not types:
+        return """
+==============================
+EVALUATIONS: SKIP — EVAL_TYPES empty in FloTorch/execution.py
+==============================
+"""
+    parts: list[str] = []
+    if "llm" in types:
+        parts.append(step_llm_evaluation(ctx))
+    if "prompt" in types:
+        parts.append(step_prompt_evaluation(ctx))
+    if "rag" in types:
+        parts.append(step_rag_evaluations(ctx))
+    if "agent" in types:
+        parts.append(step_agent_evaluation(ctx))
+    if "workflow" in types:
+        parts.append(step_workflow_evaluation(ctx))
+    return "".join(parts)
+
+
+def _single_shot_final_summary(ctx: RunContext, mod_list: list[str]) -> str:
+    lines = [
+        "1. Login status",
+        "2. Org provider created or skipped",
+        f"3. Workspace `{ctx.workspace_name}` created and entered",
+    ]
+    if "guardrails" in mod_list:
+        lines.append(f"4. Guardrails + model `{guardrail_test_model_name(ctx.uid)}` + Playground validation")
+    if "prompt_partials" in mod_list:
+        lines.append("5. Prompt partials + Playground validation")
+    if "evaluations" in mod_list and _evaluation_types(ctx):
+        lines.append(f"6. Evaluations ({_eval_type_label(_evaluation_types(ctx))})")
+    return f"""
+==============================
+FINAL SUMMARY
+==============================
+After all steps, report back:
+{chr(10).join(lines)}
+"""
+
+
+def build_task_single_shot_from_execution_plan(ctx: RunContext, modules) -> str:
+    """One Agent.run() prompt driven by FloTorch/execution.py MODULES + EVAL_TYPES."""
+    mod_list = normalize_execution_modules(modules, ctx)
+    mod_set = set(mod_list)
+    test_cases = [m for m in mod_list if m in _TEST_CASE_MODULES]
+    pre = precondition_requirements(ctx, test_cases or _test_cases_for_modules_all(ctx))
+    eval_types = _evaluation_types(ctx)
+
+    parts: list[str] = [
+        """
+You are automating a FloTorch QA workflow on https://console.flotorch.cloud/. Follow every step in order.
+Always wait for pages to fully load. After Save/Create/Submit, wait for confirmation before proceeding.
+Do NOT call "done" or stop until the FINAL SUMMARY at the end.
+
+""",
+        provider_service_and_type_select_all(),
+        _single_shot_login(ctx),
+    ]
+
+    if "org_provider" in mod_set:
+        parts.append(step_org_provider(ctx))
+
+    parts.append(step_create_and_enter_workspace(ctx))
+
+    if pre["workspace_provider"] and "workspace_provider" in mod_set:
+        parts.append(step_workspace_provider(ctx))
+    if "models" in mod_set:
+        if pre["models_full"]:
+            parts.append(step_chat_models(ctx))
+            parts.append(step_embedding_model(ctx))
+        elif pre["models_org_single"]:
+            parts.append(step_chat_model_for_prompt_partials(ctx))
+    if pre["vector_providers"] and "vector_providers" in mod_set:
+        parts.append(step_vector_storage_providers(ctx))
+    if pre["vector_repos"] and "vector_repos" in mod_set:
+        parts.append(step_vector_repositories(ctx))
+    if pre["datasets"] and "datasets" in mod_set:
+        if "llm" in eval_types or "prompt" in eval_types:
+            parts.append(step_dataset(ctx))
+        if "rag" in eval_types:
+            parts.append(step_rag_datasets(ctx))
+        if "agent" in eval_types or "workflow" in eval_types:
+            parts.append(step_agent_dataset(ctx))
+    if "guardrails" in mod_set:
+        test_model = guardrail_test_model_name(ctx.uid)
+        parts.append(f"""
+==============================
+GUARDRAILS TEST CASE
+==============================
+Create 4 sanity guardrails (Custom/Replace, AWS/Block, SS/Redact, Phone/Log),
+then one published model `{test_model}` with Input Guardrails attached,
+then validate guardrail behavior in Playground.
+Do NOT create extra chat models, embedding models, or datasets in this block.
+""")
+        parts.append(step_guardrails_sanity_create(ctx))
+        parts.append(step_guardrail_test_model(ctx))
+        parts.append(step_playground_validate_guardrails(ctx))
+        parts.append(playground_guardrails_final_summary(ctx))
+    if "prompt_partials" in mod_set:
+        parts.append(step_prompt_partials(ctx))
+        parts.append(step_playground_validate_prompt_partial(ctx))
+        parts.append(partials_final_summary(ctx))
+    if "evaluations" in mod_set and eval_types:
+        parts.append(_single_shot_eval_steps(ctx))
+
+    parts.append(_single_shot_final_summary(ctx, mod_list))
+    return "".join(parts)
 
 
 def suite_phase_titles_for_report(

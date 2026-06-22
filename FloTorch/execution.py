@@ -25,4 +25,4 @@ EVAL_TYPES = []
 
 # ===== MODULES =====
 # "all" → guardrails + prompt_partials + evaluations (if EVAL_TYPES non-empty)
-MODULES = "prompt_partials"
+MODULES = "guardrails"

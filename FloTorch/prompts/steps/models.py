@@ -324,9 +324,11 @@ SKIP — no providers in FloTorch/.env; cannot create guardrail test pipeline. C
 GUARDRAIL TEST MODEL — ONE MODEL ONLY (GUARDRAILS SUITE)
 ==============================
 PREREQUISITE: Guardrails sanity create phase completed (4 guardrails created).
+Org provider: **{ctx.org_provider_name}** (created in Phase 2 — do NOT create a new provider).
 
 **FLOTORCH_WORKFLOW=guardrails:** create **only** this model (`{model_name}`).
 Do **not** run the standard Step 6 flow (no second chat model, no `-2` suffix model, no embedding model).
+Do **not** create any organization providers, workspace providers, or datasets.
 
 Model creation sequence:
 

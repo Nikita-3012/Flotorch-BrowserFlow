@@ -362,7 +362,7 @@ def _sanity_aws_provider_create_block(ctx: RunContext) -> str:
 - Name: `{aws_name}`
 - Description: `sanity aws provider guardrail block {ctx.uid}`
 - **There is NO Type field** on this form (no Keyword/Regex dropdown — that exists only on Custom guardrails).
-- **Provider** dropdown: select the organization provider instance created in Step 2.
+- **Provider** dropdown: select the organization provider instance created in Phase 2 (exact name: `{ctx.org_provider_name}`).
 - **Guardrail** dropdown: select `{AWS_BEDROCK_GUARDRAIL_ID}`.
 - **Version** dropdown: select latest version.
 - If Version dropdown is empty, mark FAIL and stop AWS guardrail subtest.
@@ -380,6 +380,9 @@ def step_guardrails_sanity_create(ctx: RunContext) -> str:
 ==============================
 GUARDRAILS SANITY CREATE (TARGETED — EXACTLY 4 GUARDRAILS)
 ==============================
+SCOPE: Create exactly the guardrails listed below. Do NOT navigate to Provider, Model, or Dataset sections.
+Org provider: **{ctx.first_provider['name'] if ctx.first_provider else 'N/A'}** (from Phase 2 — do NOT create a new provider).
+
 Create **exactly 4** guardrails — one per category below (or 3 if AWS step is SKIP):
 
 | # | Category | Action | Path |
@@ -415,8 +418,9 @@ Create **exactly 4** guardrails — one per category below (or 3 if AWS step is 
 
 NEXT — MODEL CREATION (guardrail test pipeline):
 - After guardrails are created, open Model Registry → Models and create the guardrail test model.
-- Organization provider: use the instance created in Step 2 (org provider).
+- Organization provider: use the instance created in Step 2 (org provider) — do NOT create a new one.
 - **Base model (from .env):** {pipeline_base_model_from_env(ctx)}
+- SCOPE: Do NOT create any other guardrails, providers, models, or datasets after these 4 guardrails.
 """
 
 
