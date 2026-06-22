@@ -1,0 +1,14 @@
+[
+  {
+    "question": "What functionality does Amazon Bedrock offer as a managed service?",
+    "answer": "Amazon Bedrock provides a fully managed platform that offers access to high-performance foundation models (FMs) from top AI providers and Amazon through a single unified API interface."
+  },
+  {
+    "question": "What are the primary features available in Amazon Bedrock?",
+    "answer": "Amazon Bedrock supports key functionalities such as prompt testing, grounding responses with external data, orchestrating customer-facing apps, personalizing models using data, boosting performance with Provisioned Throughput, model evaluation, and implementing guardrails for safe outputs."
+  }, 
+  {
+    "question": "Which types of credentials are accepted for accessing Amazon Bedrock programmatically?",
+    "answer": "Users can connect programmatically to Amazon Bedrock using IAM user credentials, temporary roles, or credentials via IAM Identity Center (formerly AWS SSO)."
+   }
+]
